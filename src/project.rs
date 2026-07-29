@@ -64,8 +64,7 @@ fn scan_directory(
     directory: &Path,
     chunker: &mut Chunker,
 ) -> io::Result<Vec<ProjectNode>> {
-    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
+    let entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     let mut children = Vec::new();
 
     for entry in entries {
@@ -150,6 +149,11 @@ fn scan_directory(
         });
     }
 
+    children.sort_by(|left, right| {
+        matches!(left.kind, NodeKind::Directory)
+            .cmp(&matches!(right.kind, NodeKind::Directory))
+            .then_with(|| left.name.cmp(&right.name))
+    });
     Ok(children)
 }
 

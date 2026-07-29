@@ -1,6 +1,7 @@
 import "./style.css";
 import { createCamera } from "./camera";
 import { updateLabelLod } from "./label-lod";
+import { createSourceTooltip } from "./source-tooltip";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type MapNode = {
@@ -46,19 +47,25 @@ if (!token) {
       app.append(map);
       const camera = createCamera(app, map, {
         fitScale: calculateFitScale(app, map),
-        onScaleChange: (scale, fitScale) => updateLabelLod(map, scale, fitScale),
+        onScaleChange: (scale) => updateLabelLod(map, scale),
       });
+      createSourceTooltip(app, map);
+      const controls = document.createElement("div");
+      controls.className = "view-controls";
+      controls.dataset.cameraControl = "";
       const reset = document.createElement("button");
       reset.className = "reset-view";
       reset.type = "button";
       reset.textContent = "Reset view";
       reset.addEventListener("click", camera.reset);
-      app.append(reset);
+      controls.append(reset);
+      app.append(controls);
       const fit = () =>
         requestAnimationFrame(() => {
           camera.setFitScale(calculateFitScale(app, map));
         });
-      new ResizeObserver(fit).observe(app);
+      const resizeObserver = new ResizeObserver(fit);
+      resizeObserver.observe(app);
     })
     .catch((error: unknown) => {
       app.textContent = error instanceof Error ? error.message : "Unable to load project";
@@ -73,13 +80,13 @@ function renderNode(node: MapNode, wrapColumn: number, root = false): HTMLElemen
 
   const label = document.createElement("div");
   label.className = "label";
-  const pathCharacters = [...node.path];
-  label.textContent =
-    node.kind === "file"
-      ? pathCharacters.length > 50
-        ? `…${pathCharacters.slice(-49).join("")}`
-        : node.path
-      : node.name;
+  label.textContent = node.name;
+  if (node.kind === "directory") {
+    const text = document.createElement("span");
+    text.className = "directory-label-text";
+    text.textContent = label.textContent;
+    label.replaceChildren(text);
+  }
   label.title = node.path || node.name;
   element.append(label);
 

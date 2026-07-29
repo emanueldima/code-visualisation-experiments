@@ -76,6 +76,12 @@ export function createCamera(
     dragStart = undefined;
   };
   const onPointerDown = (event: PointerEvent) => {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("[data-camera-control], button, a, input, select, textarea")
+    ) {
+      return;
+    }
     if (event.pointerType === "mouse" && (event.button !== 0 || event.shiftKey)) return;
 
     viewport.setPointerCapture(event.pointerId);
@@ -120,8 +126,10 @@ export function createCamera(
     beginGesture();
   };
   const onWheel = (event: WheelEvent) => {
+    if (event.target instanceof Element && event.target.closest("[data-camera-control]")) return;
+
     event.preventDefault();
-    if (event.ctrlKey) {
+    if (event.ctrlKey || event.metaKey) {
       zoomAt(eventPoint(event, viewport), state.scale * Math.exp(-event.deltaY * 0.003));
       return;
     }

@@ -75,6 +75,8 @@ fn pack_node(node: ProjectNode, target_aspect: f64) -> PackedNode {
         ..
     } = node;
     if matches!(kind, NodeKind::Chunk) {
+        let width = (name.chars().count().max(1) + 1) as f64 * LABEL_GLYPH_WIDTH
+            + (LABEL_HORIZONTAL_PADDING + LABEL_EDGE_INSET) * 2.0;
         return PackedNode {
             map: MapNode {
                 name,
@@ -88,8 +90,8 @@ fn pack_node(node: ProjectNode, target_aspect: f64) -> PackedNode {
                 start_byte,
                 end_byte,
             },
-            width: columns.max(1) as f64 * GLYPH_WIDTH + CHUNK_PADDING * 2.0,
-            height: rows.max(1) as f64 * LINE_HEIGHT + CHUNK_PADDING * 2.0,
+            width,
+            height: LABEL_LINE_HEIGHT,
         };
     }
 
@@ -272,9 +274,10 @@ fn pack_shelves(nodes: &[PackedNode], target_aspect: f64, gutter: f64) -> (f64, 
                 .fold(0.0_f64, f64::max)
         })
         .sum::<f64>()
-        + gutter * (rows.len() + 1) as f64;
+        + gutter * (rows.len() + 1) as f64
+        + DIRECTORY_HEADER_HEIGHT;
     let mut rectangles = vec![Rect::UNIT; nodes.len()];
-    let mut y = gutter;
+    let mut y = gutter + DIRECTORY_HEADER_HEIGHT;
     for row in rows {
         let row_height = nodes[row.clone()]
             .iter()
@@ -296,12 +299,14 @@ fn pack_shelves(nodes: &[PackedNode], target_aspect: f64, gutter: f64) -> (f64, 
     (width, height, rectangles)
 }
 
-const GLYPH_WIDTH: f64 = 7.2;
-const LINE_HEIGHT: f64 = 16.2;
-const CHUNK_PADDING: f64 = 3.0;
+const LABEL_GLYPH_WIDTH: f64 = 29.0;
+const LABEL_HORIZONTAL_PADDING: f64 = 12.0;
+const LABEL_EDGE_INSET: f64 = 2.0;
+const LABEL_LINE_HEIGHT: f64 = 60.0;
 const FILE_GUTTER: f64 = 4.0;
 const FILE_HEADER_HEIGHT: f64 = 18.0;
 const DIRECTORY_GUTTER: f64 = 8.0;
+const DIRECTORY_HEADER_HEIGHT: f64 = 60.0;
 
 #[cfg(test)]
 mod tests {
@@ -310,19 +315,24 @@ mod tests {
     use super::pack;
 
     #[test]
-    fn preserves_natural_file_ratios() {
+    fn packs_directory_children_on_shelves() {
         let map = pack(
             directory(vec![chunk("a", 40, 100), chunk("b", 40, 100)]),
             1.6,
         );
         let children = &map.root.children;
 
-        assert_eq!(children[0].rect.x, 8.0 / 612.0);
-        assert_eq!(children[0].rect.width, 294.0 / 612.0);
-        assert_eq!(children[1].rect.x, 310.0 / 612.0);
-        assert_eq!(map.world_width, 612.0);
-        assert_eq!(map.world_height, 1642.0);
-        assert!((map.aspect_ratio - 612.0 / 1642.0).abs() < f64::EPSILON);
+        assert_eq!(children[0].rect.x, 8.0 / 102.0);
+        assert_eq!(children[0].rect.width, 86.0 / 102.0);
+        assert_eq!(children[1].rect.x, children[0].rect.x);
+        assert_eq!(
+            children[0].rect.y,
+            (super::DIRECTORY_GUTTER + super::DIRECTORY_HEADER_HEIGHT) / 204.0
+        );
+        assert!(children[0].rect.y < children[1].rect.y);
+        assert_eq!(map.world_width, 102.0);
+        assert_eq!(map.world_height, 204.0);
+        assert!((map.aspect_ratio - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -344,6 +354,16 @@ mod tests {
         );
         assert_eq!(children[4].rect.x, children[5].rect.x);
         assert!(children[4].rect.y < children[5].rect.y);
+    }
+
+    #[test]
+    fn sizes_chunks_from_full_labels() {
+        let short = pack(file(vec![chunk("fn a", 120, 100)]), 1.6);
+        let long = pack(file(vec![chunk("fn a_much_longer_name", 120, 100)]), 1.6);
+
+        assert!(short.world_width < long.world_width);
+        assert_eq!(short.world_height, long.world_height);
+        assert!(long.world_height < 100.0);
     }
 
     fn directory(children: Vec<ProjectNode>) -> ProjectNode {
