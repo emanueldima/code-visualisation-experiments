@@ -30,7 +30,7 @@ export function createSourceTooltip(
     showTimer = undefined;
     hideTimer = undefined;
     tooltip.hidden = true;
-    activeChunk?.classList.remove("hovered");
+    if (activeChunk) setHovered(surface, activeChunk, false);
   };
   const scheduleHide = () => {
     window.clearTimeout(hideTimer);
@@ -54,9 +54,9 @@ export function createSourceTooltip(
     window.clearTimeout(showTimer);
     window.clearTimeout(hideTimer);
     if (activeChunk !== chunk) tooltip.hidden = true;
-    activeChunk?.classList.remove("hovered");
+    if (activeChunk) setHovered(surface, activeChunk, false);
     activeChunk = chunk;
-    activeChunk.classList.add("hovered");
+    setHovered(surface, activeChunk, true);
     chunkHovered = true;
     pointer = { x: event.clientX, y: event.clientY };
     showTimer = window.setTimeout(() => show(chunk), delay);
@@ -72,7 +72,7 @@ export function createSourceTooltip(
     if (event.relatedTarget instanceof Node && chunk.contains(event.relatedTarget)) return;
 
     chunkHovered = false;
-    chunk.classList.remove("hovered");
+    setHovered(surface, chunk, false);
     scheduleHide();
   };
   const onTooltipEnter = () => {
@@ -106,6 +106,15 @@ function closestChunk(target: EventTarget | null, surface: HTMLElement): HTMLEle
 
   const chunk = target.closest<HTMLElement>(".chunk");
   return chunk && surface.contains(chunk) ? chunk : undefined;
+}
+
+function setHovered(surface: HTMLElement, chunk: HTMLElement, hovered: boolean): void {
+  const id = chunk.dataset.nodeId;
+  if (!id) return;
+
+  for (const segment of surface.querySelectorAll<HTMLElement>(`.chunk[data-node-id="${id}"]`)) {
+    segment.classList.toggle("hovered", hovered);
+  }
 }
 
 function placeTooltip(tooltip: HTMLElement, pointer: { x: number; y: number }): void {

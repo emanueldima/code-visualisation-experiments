@@ -12,11 +12,11 @@ use std::{
 use crate::project::{ProjectNode, scan};
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     routing::get,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tower_http::services::ServeDir;
 
 const ACCESS_TOKEN: &str = "source-map-dev";
@@ -32,11 +32,6 @@ struct MapResponse {
     #[serde(flatten)]
     map: layout::PackedMap,
     wrap_column: usize,
-}
-
-#[derive(Deserialize)]
-struct LayoutQuery {
-    aspect: Option<f64>,
 }
 
 #[tokio::main]
@@ -65,7 +60,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn get_map(
     State(state): State<AppState>,
-    Query(query): Query<LayoutQuery>,
     headers: HeaderMap,
 ) -> Result<Json<MapResponse>, StatusCode> {
     let supplied = headers
@@ -77,9 +71,8 @@ async fn get_map(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let aspect = query.aspect.unwrap_or(16.0 / 9.0).clamp(0.25, 4.0);
     Ok(Json(MapResponse {
-        map: layout::pack(state.project.as_ref().clone(), aspect),
+        map: layout::pack(state.project.as_ref().clone()),
         wrap_column: state.wrap_column,
     }))
 }

@@ -1,25 +1,43 @@
 use serde::Serialize;
-use std::ops::Range;
 
 use crate::project::{NodeKind, ProjectNode};
 
+const LINES_PER_BLOCK: usize = 20;
+const COLUMNS_PER_LINE: usize = 40;
+const GLYPH_WIDTH: f64 = 29.0;
+const HORIZONTAL_PADDING: f64 = 20.0;
+const A4_HEIGHT_RATIO: f64 = std::f64::consts::SQRT_2;
+const BASE_GAP: f64 = 40.0;
+const BLOCK_WIDTH: f64 = COLUMNS_PER_LINE as f64 * GLYPH_WIDTH + HORIZONTAL_PADDING * 2.0;
+const BLOCK_HEIGHT: f64 = BLOCK_WIDTH * A4_HEIGHT_RATIO;
+
 #[derive(Serialize)]
 pub struct PackedMap {
-    pub root: MapNode,
+    pub blocks: Vec<MapBlock>,
+    pub lines_per_block: usize,
     pub aspect_ratio: f64,
     pub world_width: f64,
     pub world_height: f64,
 }
 
 #[derive(Serialize)]
+pub struct MapBlock {
+    pub rect: Rect,
+    pub nodes: Vec<MapNode>,
+}
+
+#[derive(Serialize)]
 pub struct MapNode {
+    pub id: usize,
+    pub ancestor_ids: Vec<usize>,
     pub name: String,
     pub path: String,
     pub kind: &'static str,
-    pub rect: Rect,
+    pub lines: Vec<String>,
+    pub slot: usize,
+    pub continuation: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    pub children: Vec<MapNode>,
     pub columns: usize,
     pub rows: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,32 +54,50 @@ pub struct Rect {
     pub height: f64,
 }
 
-pub fn pack(root: ProjectNode, target_aspect: f64) -> PackedMap {
-    let packed = pack_node(root, target_aspect);
+pub fn pack(root: ProjectNode) -> PackedMap {
+    let mut nodes = Vec::new();
+    flatten(root, &mut Vec::new(), &mut nodes);
+    let mut blocks = paginate(nodes);
+    let mut world_width = 1.0_f64;
+    let mut world_height = 1.0_f64;
+
+    for (index, block) in blocks.iter_mut().enumerate() {
+        let (column, row) = morton_coordinates(index);
+        block.rect = Rect {
+            x: axis_position(column, BLOCK_WIDTH),
+            y: axis_position(row, BLOCK_HEIGHT),
+            width: BLOCK_WIDTH,
+            height: BLOCK_HEIGHT,
+        };
+        world_width = world_width.max(block.rect.x + block.rect.width);
+        world_height = world_height.max(block.rect.y + block.rect.height);
+    }
+
     PackedMap {
-        root: packed.map,
-        aspect_ratio: packed.width / packed.height,
-        world_width: packed.width,
-        world_height: packed.height,
+        blocks,
+        lines_per_block: LINES_PER_BLOCK,
+        aspect_ratio: world_width / world_height,
+        world_width,
+        world_height,
     }
 }
 
-impl Rect {
-    const UNIT: Self = Self {
-        x: 0.0,
-        y: 0.0,
-        width: 1.0,
-        height: 1.0,
-    };
+struct DisplayNode {
+    id: usize,
+    ancestor_ids: Vec<usize>,
+    name: String,
+    path: String,
+    kind: &'static str,
+    lines: Vec<String>,
+    has_children: bool,
+    source: Option<String>,
+    columns: usize,
+    rows: usize,
+    start_byte: Option<usize>,
+    end_byte: Option<usize>,
 }
 
-struct PackedNode {
-    map: MapNode,
-    width: f64,
-    height: f64,
-}
-
-fn pack_node(node: ProjectNode, target_aspect: f64) -> PackedNode {
+fn flatten(node: ProjectNode, ancestors: &mut Vec<usize>, output: &mut Vec<DisplayNode>) {
     let ProjectNode {
         name,
         path,
@@ -74,340 +110,318 @@ fn pack_node(node: ProjectNode, target_aspect: f64) -> PackedNode {
         end_byte,
         ..
     } = node;
-    if matches!(kind, NodeKind::Chunk) {
-        let width = (name.chars().count().max(1) + 1) as f64 * LABEL_GLYPH_WIDTH
-            + (LABEL_HORIZONTAL_PADDING + LABEL_EDGE_INSET) * 2.0;
-        return PackedNode {
-            map: MapNode {
-                name,
-                path,
-                kind: "chunk",
-                rect: Rect::UNIT,
-                source,
-                children: Vec::new(),
-                columns,
-                rows,
-                start_byte,
-                end_byte,
-            },
-            width,
-            height: LABEL_LINE_HEIGHT,
-        };
-    }
-
-    let mut packed_children = children
-        .into_iter()
-        .map(|child| pack_node(child, target_aspect))
-        .collect::<Vec<_>>();
-    let gutter = if matches!(kind, NodeKind::File) {
-        FILE_GUTTER
-    } else {
-        DIRECTORY_GUTTER
-    };
-    let (width, height, rectangles) = if matches!(kind, NodeKind::File) {
-        pack_file(&packed_children, target_aspect, gutter)
-    } else {
-        pack_shelves(&packed_children, target_aspect, gutter)
-    };
-    for (child, rect) in packed_children.iter_mut().zip(rectangles) {
-        child.map.rect = rect;
-    }
-
-    PackedNode {
-        map: MapNode {
-            name,
-            path,
-            kind: if matches!(kind, NodeKind::File) {
-                "file"
-            } else {
-                "directory"
-            },
-            rect: Rect::UNIT,
-            source: None,
-            children: packed_children.into_iter().map(|child| child.map).collect(),
-            columns,
-            rows,
-            start_byte,
-            end_byte,
+    let lines = wrap_label(&name, COLUMNS_PER_LINE);
+    let has_children = !children.is_empty();
+    let id = output.len();
+    output.push(DisplayNode {
+        id,
+        ancestor_ids: ancestors.clone(),
+        name,
+        path,
+        kind: match kind {
+            NodeKind::Directory => "directory",
+            NodeKind::File => "file",
+            NodeKind::Chunk => "chunk",
         },
-        width,
-        height,
+        lines,
+        has_children,
+        source,
+        columns,
+        rows,
+        start_byte,
+        end_byte,
+    });
+    ancestors.push(id);
+    for child in children {
+        flatten(child, ancestors, output);
     }
+    ancestors.pop();
 }
 
-fn pack_file(nodes: &[PackedNode], target_aspect: f64, gutter: f64) -> (f64, f64, Vec<Rect>) {
-    if nodes.is_empty() {
-        return (1.0, 1.0, Vec::new());
-    }
+fn paginate(nodes: Vec<DisplayNode>) -> Vec<MapBlock> {
+    let mut blocks = Vec::new();
+    let mut current = empty_block();
+    let mut used_slots = 0;
 
-    let mut best = None;
-    for column_count in 1..=nodes.len() {
-        let columns = partition_columns(nodes, column_count, gutter);
-        let widths = columns
-            .iter()
-            .map(|column| {
-                nodes[column.clone()]
-                    .iter()
-                    .map(|node| node.width)
-                    .fold(0.0_f64, f64::max)
-            })
-            .collect::<Vec<_>>();
-        let content_height = columns
-            .iter()
-            .map(|column| {
-                nodes[column.clone()]
-                    .iter()
-                    .map(|node| node.height)
-                    .sum::<f64>()
-                    + gutter * column.len().saturating_sub(1) as f64
-            })
-            .fold(0.0_f64, f64::max);
-        let width = widths.iter().sum::<f64>() + gutter * (column_count + 1) as f64;
-        let height = content_height + gutter * 2.0 + FILE_HEADER_HEIGHT;
-        let score = ((width / height) / target_aspect).ln().abs();
-        if best
-            .as_ref()
-            .is_some_and(|(best_score, ..): &(f64, _, _, _, _)| *best_score <= score)
-        {
+    for node in nodes {
+        if node.lines.len() > LINES_PER_BLOCK {
+            if used_slots > 0 {
+                blocks.push(current);
+                current = empty_block();
+                used_slots = 0;
+            }
+            for (index, lines) in node.lines.chunks(LINES_PER_BLOCK).enumerate() {
+                let mut block = empty_block();
+                block
+                    .nodes
+                    .push(map_node(&node, lines.to_vec(), 0, index > 0));
+                blocks.push(block);
+            }
             continue;
         }
-        best = Some((score, width, height, columns, widths));
-    }
 
-    let (_, width, height, columns, widths) = best.expect("nodes are not empty");
-    let mut rectangles = vec![Rect::UNIT; nodes.len()];
-    let mut x = gutter;
-    for (column, column_width) in columns.into_iter().zip(widths) {
-        let mut y = gutter + FILE_HEADER_HEIGHT;
-        for index in column {
-            rectangles[index] = Rect {
-                x: x / width,
-                y: y / height,
-                width: nodes[index].width / width,
-                height: nodes[index].height / height,
-            };
-            y += nodes[index].height + gutter;
+        let remaining = LINES_PER_BLOCK - used_slots;
+        let orphaned_header = node.has_children
+            && node.lines.len() < LINES_PER_BLOCK
+            && node.lines.len() >= remaining;
+        if node.lines.len() > remaining || orphaned_header {
+            blocks.push(current);
+            current = empty_block();
+            used_slots = 0;
         }
-        x += column_width + gutter;
+
+        let line_count = node.lines.len();
+        current
+            .nodes
+            .push(map_node(&node, node.lines.clone(), used_slots, false));
+        used_slots += line_count;
+        if used_slots == LINES_PER_BLOCK {
+            blocks.push(current);
+            current = empty_block();
+            used_slots = 0;
+        }
     }
 
-    (width, height, rectangles)
+    if !current.nodes.is_empty() {
+        blocks.push(current);
+    }
+    blocks
 }
 
-fn partition_columns(nodes: &[PackedNode], column_count: usize, gutter: f64) -> Vec<Range<usize>> {
-    let mut suffix_heights = vec![0.0; nodes.len() + 1];
-    for index in (0..nodes.len()).rev() {
-        suffix_heights[index] = suffix_heights[index + 1] + nodes[index].height + gutter;
+fn map_node(node: &DisplayNode, lines: Vec<String>, slot: usize, continuation: bool) -> MapNode {
+    MapNode {
+        id: node.id,
+        ancestor_ids: node.ancestor_ids.clone(),
+        name: node.name.clone(),
+        path: node.path.clone(),
+        kind: node.kind,
+        lines,
+        slot,
+        continuation,
+        source: node.source.clone(),
+        columns: node.columns,
+        rows: node.rows,
+        start_byte: node.start_byte,
+        end_byte: node.end_byte,
     }
-
-    let mut columns = Vec::with_capacity(column_count);
-    let mut start = 0;
-    for column_index in 0..column_count {
-        let remaining_columns = column_count - column_index;
-        if remaining_columns == 1 {
-            columns.push(start..nodes.len());
-            break;
-        }
-
-        let target_height = suffix_heights[start] / remaining_columns as f64;
-        let last_allowed = nodes.len() - (remaining_columns - 1);
-        let mut end = start + 1;
-        let mut height = nodes[start].height + gutter;
-        while end < last_allowed {
-            let candidate = height + nodes[end].height + gutter;
-            if (height - target_height).abs() <= (candidate - target_height).abs() {
-                break;
-            }
-            height = candidate;
-            end += 1;
-        }
-        columns.push(start..end);
-        start = end;
-    }
-    columns
 }
 
-fn pack_shelves(nodes: &[PackedNode], target_aspect: f64, gutter: f64) -> (f64, f64, Vec<Rect>) {
-    if nodes.is_empty() {
-        return (1.0, 1.0, Vec::new());
+fn empty_block() -> MapBlock {
+    MapBlock {
+        rect: Rect {
+            x: 0.0,
+            y: 0.0,
+            width: BLOCK_WIDTH,
+            height: BLOCK_HEIGHT,
+        },
+        nodes: Vec::new(),
+    }
+}
+
+fn wrap_label(label: &str, columns: usize) -> Vec<String> {
+    if label.is_empty() {
+        return vec![String::new()];
     }
 
-    let total_area = nodes
-        .iter()
-        .map(|node| node.width * node.height)
-        .sum::<f64>();
-    let target_width = (total_area * target_aspect).sqrt();
-    let mut rows = Vec::new();
-    let mut start = 0;
-    while start < nodes.len() {
-        let mut end = start + 1;
-        let mut width = nodes[start].width;
-        while end < nodes.len() {
-            let candidate = width + gutter + nodes[end].width;
-            if (width - target_width).abs() <= (candidate - target_width).abs() {
-                break;
-            }
-            width = candidate;
-            end += 1;
-        }
-        rows.push(start..end);
-        start = end;
-    }
-
-    let width = rows
-        .iter()
-        .map(|row| {
-            nodes[row.clone()]
-                .iter()
-                .map(|node| node.width)
-                .sum::<f64>()
-                + gutter * row.len().saturating_sub(1) as f64
-        })
-        .fold(0.0_f64, f64::max)
-        + gutter * 2.0;
-    let height = rows
-        .iter()
-        .map(|row| {
-            nodes[row.clone()]
-                .iter()
-                .map(|node| node.height)
-                .fold(0.0_f64, f64::max)
-        })
-        .sum::<f64>()
-        + gutter * (rows.len() + 1) as f64
-        + DIRECTORY_HEADER_HEIGHT;
-    let mut rectangles = vec![Rect::UNIT; nodes.len()];
-    let mut y = gutter + DIRECTORY_HEADER_HEIGHT;
-    for row in rows {
-        let row_height = nodes[row.clone()]
+    let mut remaining = label.chars().collect::<Vec<_>>();
+    let mut lines = Vec::new();
+    while remaining.len() > columns {
+        let split = remaining[..columns]
             .iter()
-            .map(|node| node.height)
-            .fold(0.0_f64, f64::max);
-        let mut x = gutter;
-        for index in row {
-            rectangles[index] = Rect {
-                x: x / width,
-                y: y / height,
-                width: nodes[index].width / width,
-                height: nodes[index].height / height,
-            };
-            x += nodes[index].width + gutter;
-        }
-        y += row_height + gutter;
+            .rposition(|character| matches!(character, ' ' | '/' | ':' | '_' | '-'))
+            .map_or(columns, |index| index + 1);
+        lines.push(remaining.drain(..split).collect());
     }
-
-    (width, height, rectangles)
+    lines.push(remaining.into_iter().collect());
+    lines
 }
 
-const LABEL_GLYPH_WIDTH: f64 = 29.0;
-const LABEL_HORIZONTAL_PADDING: f64 = 12.0;
-const LABEL_EDGE_INSET: f64 = 2.0;
-const LABEL_LINE_HEIGHT: f64 = 60.0;
-const FILE_GUTTER: f64 = 4.0;
-const FILE_HEADER_HEIGHT: f64 = 18.0;
-const DIRECTORY_GUTTER: f64 = 8.0;
-const DIRECTORY_HEADER_HEIGHT: f64 = 60.0;
+fn morton_coordinates(index: usize) -> (usize, usize) {
+    let mut column = 0;
+    let mut row = 0;
+    let mut value = index;
+    let mut bit = 0;
+    while value > 0 {
+        column |= (value & 1) << bit;
+        value >>= 1;
+        row |= (value & 1) << bit;
+        value >>= 1;
+        bit += 1;
+    }
+    (column, row)
+}
+
+fn axis_position(index: usize, block_extent: f64) -> f64 {
+    let gap_units = index * 2 - index.count_ones() as usize;
+    index as f64 * block_extent + gap_units as f64 * BASE_GAP
+}
 
 #[cfg(test)]
 mod tests {
     use crate::project::{NodeKind, ProjectNode};
 
-    use super::pack;
+    use super::{
+        BASE_GAP, BLOCK_HEIGHT, BLOCK_WIDTH, COLUMNS_PER_LINE, DisplayNode, LINES_PER_BLOCK,
+        axis_position, morton_coordinates, pack, paginate, wrap_label,
+    };
 
     #[test]
-    fn packs_directory_children_on_shelves() {
-        let map = pack(
-            directory(vec![chunk("a", 40, 100), chunk("b", 40, 100)]),
-            1.6,
-        );
-        let children = &map.root.children;
+    fn flattens_nodes_in_preorder() {
+        let map = pack(directory(
+            "root",
+            vec![
+                file("main.rs", vec![chunk("fn main"), chunk("fn load")]),
+                directory("src", vec![file("lib.rs", vec![chunk("struct App")])]),
+            ],
+        ));
+        let names = map
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .map(|node| node.name.as_str())
+            .collect::<Vec<_>>();
 
-        assert_eq!(children[0].rect.x, 8.0 / 102.0);
-        assert_eq!(children[0].rect.width, 86.0 / 102.0);
-        assert_eq!(children[1].rect.x, children[0].rect.x);
         assert_eq!(
-            children[0].rect.y,
-            (super::DIRECTORY_GUTTER + super::DIRECTORY_HEADER_HEIGHT) / 204.0
+            names,
+            [
+                "root",
+                "main.rs",
+                "fn main",
+                "fn load",
+                "src",
+                "lib.rs",
+                "struct App"
+            ]
         );
-        assert!(children[0].rect.y < children[1].rect.y);
-        assert_eq!(map.world_width, 102.0);
-        assert_eq!(map.world_height, 204.0);
-        assert!((map.aspect_ratio - 0.5).abs() < f64::EPSILON);
+        let nodes = map
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .collect::<Vec<_>>();
+        assert_eq!(nodes[0].ancestor_ids, Vec::<usize>::new());
+        assert_eq!(nodes[1].ancestor_ids, [0]);
+        assert_eq!(nodes[2].ancestor_ids, [0, 1]);
+        assert_eq!(nodes[5].ancestor_ids, [0, 4]);
+        assert_eq!(nodes[6].ancestor_ids, [0, 4, 5]);
     }
 
     #[test]
-    fn packs_file_chunks_down_contiguous_columns() {
-        let chunks = (0..6)
-            .map(|index| chunk(&index.to_string(), 120, 100))
-            .collect();
-        let map = pack(file(chunks), 1.6);
-        let children = &map.root.children;
-
-        assert!(
-            children
-                .windows(2)
-                .all(|pair| pair[0].rect.x <= pair[1].rect.x)
+    fn wraps_at_semantic_separators_and_hard_boundaries() {
+        assert_eq!(
+            wrap_label("alpha_beta_gamma", 6),
+            ["alpha_", "beta_", "gamma"]
         );
-        let first_chunk_y = children[0].rect.y * map.world_height;
-        assert!(
-            (first_chunk_y - (super::FILE_GUTTER + super::FILE_HEADER_HEIGHT)).abs() < f64::EPSILON
-        );
-        assert_eq!(children[4].rect.x, children[5].rect.x);
-        assert!(children[4].rect.y < children[5].rect.y);
+        assert_eq!(wrap_label("abcdefgh", 3), ["abc", "def", "gh"]);
+        assert_eq!(wrap_label("", COLUMNS_PER_LINE), [""]);
     }
 
     #[test]
-    fn sizes_chunks_from_full_labels() {
-        let short = pack(file(vec![chunk("fn a", 120, 100)]), 1.6);
-        let long = pack(file(vec![chunk("fn a_much_longer_name", 120, 100)]), 1.6);
+    fn keeps_wrapped_nodes_and_headers_together() {
+        let mut nodes = (0..19)
+            .map(|id| display_node(id, vec!["line"], false))
+            .collect::<Vec<_>>();
+        nodes.push(display_node(19, vec!["two", "lines"], false));
+        nodes.push(display_node(20, vec!["header"], true));
+        let blocks = paginate(nodes);
 
-        assert!(short.world_width < long.world_width);
-        assert_eq!(short.world_height, long.world_height);
-        assert!(long.world_height < 100.0);
+        assert_eq!(blocks[0].nodes.len(), 19);
+        assert_eq!(blocks[1].nodes[0].slot, 0);
+        assert_eq!(blocks[1].nodes[0].lines, ["two", "lines"]);
+        assert_eq!(blocks[1].nodes[1].slot, 2);
+
+        let mut orphan_nodes = (0..19)
+            .map(|id| display_node(id, vec!["line"], false))
+            .collect::<Vec<_>>();
+        orphan_nodes.push(display_node(19, vec!["header"], true));
+        orphan_nodes.push(display_node(20, vec!["child"], false));
+        let orphan_blocks = paginate(orphan_nodes);
+
+        assert_eq!(orphan_blocks[0].nodes.len(), 19);
+        assert_eq!(orphan_blocks[1].nodes[0].slot, 0);
+        assert_eq!(orphan_blocks[1].nodes[1].slot, 1);
     }
 
-    fn directory(children: Vec<ProjectNode>) -> ProjectNode {
-        ProjectNode {
-            name: "root".into(),
-            path: String::new(),
-            kind: NodeKind::Directory,
+    #[test]
+    fn splits_only_nodes_larger_than_a_block() {
+        let lines = (0..LINES_PER_BLOCK + 1)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>();
+        let blocks = paginate(vec![display_node(0, lines, false)]);
+
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].nodes[0].lines.len(), LINES_PER_BLOCK);
+        assert_eq!(blocks[1].nodes[0].lines.len(), 1);
+        assert!(!blocks[0].nodes[0].continuation);
+        assert!(blocks[1].nodes[0].continuation);
+    }
+
+    #[test]
+    fn places_blocks_in_stable_morton_order_with_hierarchical_gaps() {
+        assert_eq!(
+            (0..8).map(morton_coordinates).collect::<Vec<_>>(),
+            [
+                (0, 0),
+                (1, 0),
+                (0, 1),
+                (1, 1),
+                (2, 0),
+                (3, 0),
+                (2, 1),
+                (3, 1)
+            ]
+        );
+        assert_eq!(axis_position(1, BLOCK_WIDTH), BLOCK_WIDTH + BASE_GAP);
+        assert_eq!(
+            axis_position(2, BLOCK_WIDTH),
+            BLOCK_WIDTH * 2.0 + BASE_GAP * 3.0
+        );
+        assert_eq!(
+            axis_position(4, BLOCK_HEIGHT),
+            BLOCK_HEIGHT * 4.0 + BASE_GAP * 7.0
+        );
+    }
+
+    fn display_node(id: usize, lines: Vec<impl Into<String>>, has_children: bool) -> DisplayNode {
+        DisplayNode {
+            id,
+            ancestor_ids: Vec::new(),
+            name: id.to_string(),
+            path: id.to_string(),
+            kind: if has_children { "file" } else { "chunk" },
+            lines: lines.into_iter().map(Into::into).collect(),
+            has_children,
             source: None,
-            children,
             columns: 0,
             rows: 0,
-            weight: 1.0,
             start_byte: None,
             end_byte: None,
         }
     }
 
-    fn file(children: Vec<ProjectNode>) -> ProjectNode {
-        ProjectNode {
-            name: "main.rs".into(),
-            path: "main.rs".into(),
-            kind: NodeKind::File,
-            source: None,
-            children,
-            columns: 0,
-            rows: 0,
-            weight: 1.0,
-            start_byte: None,
-            end_byte: None,
-        }
+    fn directory(name: &str, children: Vec<ProjectNode>) -> ProjectNode {
+        project_node(name, NodeKind::Directory, children)
     }
 
-    fn chunk(name: &str, columns: usize, rows: usize) -> ProjectNode {
+    fn file(name: &str, children: Vec<ProjectNode>) -> ProjectNode {
+        project_node(name, NodeKind::File, children)
+    }
+
+    fn chunk(name: &str) -> ProjectNode {
+        project_node(name, NodeKind::Chunk, Vec::new())
+    }
+
+    fn project_node(name: &str, kind: NodeKind, children: Vec<ProjectNode>) -> ProjectNode {
         ProjectNode {
             name: name.into(),
             path: name.into(),
-            kind: NodeKind::Chunk,
-            source: Some(String::new()),
-            children: Vec::new(),
-            columns,
-            rows,
-            weight: (columns * rows) as f64,
-            start_byte: Some(0),
-            end_byte: Some(0),
+            kind,
+            source: None,
+            children,
+            columns: 0,
+            rows: 0,
+            weight: 1.0,
+            start_byte: None,
+            end_byte: None,
         }
     }
 }

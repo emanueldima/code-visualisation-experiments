@@ -1,7 +1,8 @@
 # Rust source map
 
-Checkpoint 1 packs every Rust file in a project into a single DOM-based,
-viewport-sized treemap.
+The server scans a Rust project, flattens its tree in preorder, and lays out
+fixed-size blocks along a Morton (Z-order) curve. Each block contains a
+vertical page of wrapped folder, file, and source-chunk names.
 
 ## Build and run
 
@@ -24,6 +25,6 @@ cargo run -- /path/to/project --port 3000 --wrap-column 120
 
 - Wheel or pinch to zoom around the pointer.
 - Drag to pan.
-- Double-click a file or directory to fit it.
+- Double-click a node to focus it.
 - Press `+`, `-`, or `0` to zoom or reset.
 - Hold Shift while dragging to select source text.

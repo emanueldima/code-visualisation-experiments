@@ -1,23 +1,31 @@
 import "./style.css";
 import { createCamera } from "./camera";
-import { updateLabelLod } from "./label-lod";
+import { createPathHighlighter } from "./path-highlighter";
 import { createSourceTooltip } from "./source-tooltip";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type MapNode = {
+  id: number;
+  ancestor_ids: number[];
   name: string;
   path: string;
   kind: "directory" | "file" | "chunk";
-  rect: Rect;
+  lines: string[];
+  slot: number;
+  continuation: boolean;
   source?: string;
-  children: MapNode[];
   columns: number;
   rows: number;
   start_byte?: number;
   end_byte?: number;
 };
+type MapBlock = {
+  rect: Rect;
+  nodes: MapNode[];
+};
 type MapResponse = {
-  root: MapNode;
+  blocks: MapBlock[];
+  lines_per_block: number;
   wrap_column: number;
   aspect_ratio: number;
   world_width: number;
@@ -31,25 +39,24 @@ const token = new URLSearchParams(location.hash.slice(1)).get("token");
 if (!token) {
   app.textContent = "Missing session token. Open the URL printed by the server.";
 } else {
-  const viewportAspect = innerWidth / innerHeight;
-  fetch(`/api/map?aspect=${viewportAspect}`, {
+  fetch("/api/map", {
     headers: { Authorization: `Bearer ${token}` },
   })
     .then((response) => {
       if (!response.ok) throw new Error(`Project request failed (${response.status})`);
       return response.json() as Promise<MapResponse>;
     })
-    .then(({ root, wrap_column, world_width, world_height }) => {
+    .then(({ blocks, lines_per_block, wrap_column, world_width, world_height }) => {
       app.textContent = "";
-      const map = renderNode(root, wrap_column, true);
+      const map = renderMap(blocks, lines_per_block, wrap_column);
       map.style.width = `${world_width}px`;
       map.style.height = `${world_height}px`;
       app.append(map);
       const camera = createCamera(app, map, {
         fitScale: calculateFitScale(app, map),
-        onScaleChange: (scale) => updateLabelLod(map, scale),
       });
       createSourceTooltip(app, map);
+      createPathHighlighter(map);
       const controls = document.createElement("div");
       controls.className = "view-controls";
       controls.dataset.cameraControl = "";
@@ -72,23 +79,40 @@ if (!token) {
     });
 }
 
-function renderNode(node: MapNode, wrapColumn: number, root = false): HTMLElement {
-  const element = document.createElement("section");
-  element.className = `node ${node.kind}${root ? " root" : ""}`;
-  element.setAttribute("aria-label", node.path || node.name);
-  if (!root) place(element, node.rect);
-
-  const label = document.createElement("div");
-  label.className = "label";
-  label.textContent = node.name;
-  if (node.kind === "directory") {
-    const text = document.createElement("span");
-    text.className = "directory-label-text";
-    text.textContent = label.textContent;
-    label.replaceChildren(text);
+function renderMap(blocks: MapBlock[], linesPerBlock: number, wrapColumn: number): HTMLElement {
+  const map = document.createElement("main");
+  map.className = "map";
+  for (const block of blocks) {
+    const element = document.createElement("section");
+    element.className = "block";
+    place(element, block.rect);
+    for (const node of block.nodes) {
+      element.append(renderNode(node, linesPerBlock, wrapColumn));
+    }
+    map.append(element);
   }
-  label.title = node.path || node.name;
-  element.append(label);
+  return map;
+}
+
+function renderNode(node: MapNode, linesPerBlock: number, wrapColumn: number): HTMLElement {
+  const element = document.createElement("article");
+  element.className = `node ${node.kind}${node.continuation ? " continuation" : ""}`;
+  element.dataset.nodeId = node.id.toString();
+  element.dataset.ancestorIds = node.ancestor_ids.join(",");
+  element.setAttribute("aria-label", node.path || node.name);
+  if (node.kind !== "chunk") element.title = node.path || node.name;
+  element.style.top = `${(node.slot / linesPerBlock) * 100}%`;
+  element.style.height = `${(node.lines.length / linesPerBlock) * 100}%`;
+
+  const lines = document.createElement("div");
+  lines.className = "node-lines";
+  for (const text of node.lines) {
+    const line = document.createElement("div");
+    line.className = "node-line";
+    line.textContent = text;
+    lines.append(line);
+  }
+  element.append(lines);
 
   if (node.kind === "chunk") {
     const content = document.createElement("div");
@@ -98,13 +122,7 @@ function renderNode(node: MapNode, wrapColumn: number, root = false): HTMLElemen
     source.style.inlineSize = `${Math.min(node.columns, wrapColumn)}ch`;
     content.append(source);
     element.append(content);
-    return element;
   }
-
-  const children = document.createElement("div");
-  children.className = "children";
-  for (const child of node.children) children.append(renderNode(child, wrapColumn));
-  element.append(children);
   return element;
 }
 
@@ -115,8 +133,8 @@ function calculateFitScale(container: HTMLElement, map: HTMLElement): number {
 }
 
 function place(element: HTMLElement, rect: Rect): void {
-  element.style.left = `${rect.x * 100}%`;
-  element.style.top = `${rect.y * 100}%`;
-  element.style.width = `${rect.width * 100}%`;
-  element.style.height = `${rect.height * 100}%`;
+  element.style.left = `${rect.x}px`;
+  element.style.top = `${rect.y}px`;
+  element.style.width = `${rect.width}px`;
+  element.style.height = `${rect.height}px`;
 }
