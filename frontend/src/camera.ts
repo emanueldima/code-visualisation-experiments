@@ -10,7 +10,7 @@ type CameraState = Point & { scale: number };
 type PinchState = CameraState & { distance: number; midpoint: Point; world: Point };
 type CameraOptions = {
   fitScale?: number;
-  minScaleFactor?: number;
+  minScale?: number;
   maxScale?: number;
   onScaleChange?(scale: number, fitScale: number): void;
 };
@@ -20,16 +20,17 @@ export function createCamera(
   surface: HTMLElement,
   {
     fitScale: initialFitScale = 1,
-    minScaleFactor = 0.5,
-    maxScale = 8,
+    minScale = 0.02,
+    maxScale = 0.5,
     onScaleChange,
   }: CameraOptions = {},
 ): Camera {
-  let fitScale = Math.min(maxScale, Math.max(Number.EPSILON, initialFitScale));
-  let minScale = fitScale * minScaleFactor;
+  minScale = Math.min(maxScale, Math.max(Number.EPSILON, minScale));
+  let fitScale = Math.min(maxScale, Math.max(minScale, initialFitScale));
   let state: CameraState = { x: 0, y: 0, scale: fitScale };
   let dragStart: (Point & { xOffset: number; yOffset: number }) | undefined;
   let pinchStart: PinchState | undefined;
+  let notifiedScale: number | undefined;
   const pointers = new Map<number, Point>();
 
   surface.style.transformOrigin = "0 0";
@@ -37,6 +38,9 @@ export function createCamera(
 
   const apply = () => {
     surface.style.transform = `translate3d(${state.x}px, ${state.y}px, 0) scale(${state.scale})`;
+    if (state.scale === notifiedScale) return;
+
+    notifiedScale = state.scale;
     onScaleChange?.(state.scale, fitScale);
   };
   const zoomAt = (point: Point, scale: number) => {
@@ -169,8 +173,7 @@ export function createCamera(
     apply();
   };
   const setFitScale = (scale: number) => {
-    fitScale = Math.min(maxScale, Math.max(Number.EPSILON, scale));
-    minScale = fitScale * minScaleFactor;
+    fitScale = Math.min(maxScale, Math.max(minScale, scale));
     reset();
   };
   const focus = (element: HTMLElement) => {

@@ -4,29 +4,27 @@ export type PathHighlighter = {
 
 export function createPathHighlighter(surface: HTMLElement): PathHighlighter {
   const segmentsById = new Map<string, HTMLElement[]>();
-  for (const node of surface.querySelectorAll<HTMLElement>(".node[data-node-id]")) {
-    const id = node.dataset.nodeId;
-    if (!id) continue;
-
-    const segments = segmentsById.get(id) ?? [];
-    segments.push(node);
-    segmentsById.set(id, segments);
+  for (const node of surface.querySelectorAll<HTMLElement>(".node[data-node-ids]")) {
+    for (const id of node.dataset.nodeIds?.split(",").filter(Boolean) ?? []) {
+      const segments = segmentsById.get(id) ?? [];
+      segments.push(node);
+      segmentsById.set(id, segments);
+    }
   }
 
-  let highlighted: HTMLElement[] = [];
+  let highlighted = new Set<HTMLElement>();
   const clear = () => {
     for (const node of highlighted) node.classList.remove("path-hovered");
-    highlighted = [];
+    highlighted = new Set();
   };
   const highlight = (node: HTMLElement) => {
     clear();
     const ids = node.dataset.ancestorIds?.split(",").filter(Boolean) ?? [];
-    const nodeId = node.dataset.nodeId;
-    if (nodeId) ids.push(nodeId);
+    ids.push(...(node.dataset.nodeIds?.split(",").filter(Boolean) ?? []));
     for (const id of ids) {
       for (const segment of segmentsById.get(id) ?? []) {
         segment.classList.add("path-hovered");
-        highlighted.push(segment);
+        highlighted.add(segment);
       }
     }
   };

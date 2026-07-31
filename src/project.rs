@@ -1,26 +1,38 @@
-use std::{fs, io, path::Path};
+use std::{fs, io, ops::Range, path::Path};
 
-use crate::syntax::Chunker;
+use crate::syntax::{CodeNode, CodeNodeKind, SourceHighlight, SyntaxTreeBuilder};
+
+#[derive(Clone, Debug)]
+pub struct FileSource {
+    pub text: String,
+    pub highlights: Vec<SourceHighlight>,
+    pub visible_ranges: Option<Vec<Range<usize>>>,
+}
 
 #[derive(Clone, Debug)]
 pub struct ProjectNode {
     pub name: String,
     pub path: String,
     pub kind: NodeKind,
+    pub public: bool,
+    pub public_members: bool,
+    pub declared_type: Option<String>,
+    pub trait_impl_target: Option<String>,
+    pub scaffold_ranges: Vec<Range<usize>>,
     pub source: Option<String>,
+    pub file_source: Option<FileSource>,
     pub children: Vec<ProjectNode>,
-    pub columns: usize,
     pub rows: usize,
-    pub weight: f64,
     pub start_byte: Option<usize>,
     pub end_byte: Option<usize>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NodeKind {
     Directory,
     File,
-    Chunk,
+    Container,
+    Source,
 }
 
 pub fn scan(root: &Path, wrap_column: usize) -> io::Result<ProjectNode> {
@@ -37,23 +49,22 @@ pub fn scan(root: &Path, wrap_column: usize) -> io::Result<ProjectNode> {
         .and_then(|name| name.to_str())
         .unwrap_or("project")
         .to_owned();
-    let mut chunker = Chunker::new(120, wrap_column).map_err(io::Error::other)?;
-    let children = scan_directory(&root, &root, &mut chunker)?;
-    let weight = children
-        .iter()
-        .map(|child| child.weight)
-        .sum::<f64>()
-        .max(1.0);
+    let mut syntax = SyntaxTreeBuilder::new(wrap_column).map_err(io::Error::other)?;
+    let children = scan_directory(&root, &root, &mut syntax)?;
 
     Ok(ProjectNode {
         name,
         path: String::new(),
         kind: NodeKind::Directory,
+        public: false,
+        public_members: false,
+        declared_type: None,
+        trait_impl_target: None,
+        scaffold_ranges: Vec::new(),
         source: None,
+        file_source: None,
         children,
-        columns: 0,
         rows: 0,
-        weight,
         start_byte: None,
         end_byte: None,
     })
@@ -62,7 +73,7 @@ pub fn scan(root: &Path, wrap_column: usize) -> io::Result<ProjectNode> {
 fn scan_directory(
     root: &Path,
     directory: &Path,
-    chunker: &mut Chunker,
+    syntax: &mut SyntaxTreeBuilder,
 ) -> io::Result<Vec<ProjectNode>> {
     let entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     let mut children = Vec::new();
@@ -83,25 +94,24 @@ fn scan_directory(
                 continue;
             }
 
-            let nested = scan_directory(root, &path, chunker)?;
+            let nested = scan_directory(root, &path, syntax)?;
             if nested.is_empty() {
                 continue;
             }
 
-            let weight = nested
-                .iter()
-                .map(|child| child.weight)
-                .sum::<f64>()
-                .max(1.0);
             children.push(ProjectNode {
                 name: name_text.to_owned(),
                 path: relative_path(root, &path),
                 kind: NodeKind::Directory,
+                public: false,
+                public_members: false,
+                declared_type: None,
+                trait_impl_target: None,
+                scaffold_ranges: Vec::new(),
                 source: None,
+                file_source: None,
                 children: nested,
-                columns: 0,
                 rows: 0,
-                weight,
                 start_byte: None,
                 end_byte: None,
             });
@@ -114,36 +124,30 @@ fn scan_directory(
 
         let source = fs::read_to_string(&path)?;
         let path_text = relative_path(root, &path);
-        let chunks = chunker
-            .split(&source)
+        let parsed = syntax.build(&source);
+        let mut highlights = Vec::new();
+        collect_highlights(&parsed, &mut highlights);
+        let code = parsed
             .into_iter()
-            .map(|chunk| ProjectNode {
-                name: chunk.label,
-                path: format!("{path_text}#{}-{}", chunk.start_byte, chunk.end_byte),
-                kind: NodeKind::Chunk,
-                source: Some(chunk.source),
-                children: Vec::new(),
-                columns: chunk.columns,
-                rows: chunk.rows,
-                weight: (chunk.columns * chunk.rows).max(1) as f64,
-                start_byte: Some(chunk.start_byte),
-                end_byte: Some(chunk.end_byte),
-            })
+            .map(|node| project_code_node(&path_text, node))
             .collect::<Vec<_>>();
-        let weight = chunks
-            .iter()
-            .map(|chunk| chunk.weight)
-            .sum::<f64>()
-            .max(1.0);
         children.push(ProjectNode {
             name: name_text.to_owned(),
             path: path_text,
             kind: NodeKind::File,
+            public: false,
+            public_members: false,
+            declared_type: None,
+            trait_impl_target: None,
+            scaffold_ranges: Vec::new(),
             source: None,
-            children: chunks,
-            columns: 0,
+            file_source: Some(FileSource {
+                text: source,
+                highlights,
+                visible_ranges: None,
+            }),
+            children: code,
             rows: 0,
-            weight,
             start_byte: None,
             end_byte: None,
         });
@@ -155,6 +159,41 @@ fn scan_directory(
             .then_with(|| left.name.cmp(&right.name))
     });
     Ok(children)
+}
+
+fn project_code_node(file_path: &str, node: CodeNode) -> ProjectNode {
+    ProjectNode {
+        name: node.name,
+        path: format!("{file_path}#{}-{}", node.start_byte, node.end_byte),
+        kind: match node.kind {
+            CodeNodeKind::Container => NodeKind::Container,
+            CodeNodeKind::Source => NodeKind::Source,
+        },
+        public: node.public,
+        public_members: node.public_members,
+        declared_type: node.declared_type,
+        trait_impl_target: node.trait_impl_target,
+        scaffold_ranges: node.scaffold_ranges,
+        source: node.source,
+        file_source: None,
+        children: node
+            .children
+            .into_iter()
+            .map(|child| project_code_node(file_path, child))
+            .collect(),
+        rows: node.rows,
+        start_byte: Some(node.start_byte),
+        end_byte: Some(node.end_byte),
+    }
+}
+
+fn collect_highlights(nodes: &[CodeNode], output: &mut Vec<SourceHighlight>) {
+    for node in nodes {
+        if let Some(highlight) = node.highlight {
+            output.push(highlight);
+        }
+        collect_highlights(&node.children, output);
+    }
 }
 
 fn should_skip_directory(name: &str) -> bool {

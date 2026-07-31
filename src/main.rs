@@ -1,5 +1,7 @@
 mod layout;
 mod project;
+mod public_view;
+mod source_flow;
 mod syntax;
 
 use std::{
@@ -12,14 +14,15 @@ use std::{
 use crate::project::{ProjectNode, scan};
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     routing::get,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 
 const ACCESS_TOKEN: &str = "source-map-dev";
+const DEFAULT_WRAP_COLUMN: usize = 80;
 
 #[derive(Clone)]
 struct AppState {
@@ -29,9 +32,15 @@ struct AppState {
 
 #[derive(Serialize)]
 struct MapResponse {
-    #[serde(flatten)]
-    map: layout::PackedMap,
+    structure: layout::PackedMap,
+    source: layout::PackedMap,
     wrap_column: usize,
+}
+
+#[derive(Deserialize)]
+struct MapQuery {
+    #[serde(default)]
+    public: bool,
 }
 
 #[tokio::main]
@@ -60,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn get_map(
     State(state): State<AppState>,
+    Query(query): Query<MapQuery>,
     headers: HeaderMap,
 ) -> Result<Json<MapResponse>, StatusCode> {
     let supplied = headers
@@ -71,8 +81,26 @@ async fn get_map(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    let project = if query.public {
+        public_view::build(state.project.as_ref())
+    } else {
+        state.project.as_ref().clone()
+    };
+    let config = layout::LayoutConfig {
+        wrap_column: state.wrap_column,
+        mode: layout::LayoutMode::Structure,
+    };
+    let structure = layout::pack(project.clone(), config);
+    let source = layout::pack(
+        project,
+        layout::LayoutConfig {
+            mode: layout::LayoutMode::Source,
+            ..config
+        },
+    );
     Ok(Json(MapResponse {
-        map: layout::pack(state.project.as_ref().clone()),
+        structure,
+        source,
         wrap_column: state.wrap_column,
     }))
 }
@@ -87,7 +115,7 @@ impl Config {
     fn from_args() -> Result<Self, String> {
         let mut root = None;
         let mut port = 3000;
-        let mut wrap_column = 120;
+        let mut wrap_column = DEFAULT_WRAP_COLUMN;
         let mut args = env::args_os().skip(1);
 
         while let Some(argument) = args.next() {

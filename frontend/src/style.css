@@ -36,83 +36,156 @@ body,
   cursor: grab;
 }
 
-.block,
 .node {
   position: absolute;
-}
-
-.block {
-  border: 2px solid #aaa;
-}
-
-.node {
-  left: 0;
-  width: 100%;
   overflow: hidden;
+  border-style: solid;
+  border-color: #aaa;
 }
 
-.node-lines {
-  display: grid;
-  height: 100%;
-  grid-auto-rows: 1fr;
+.node.directory {
+  border-width: 2px;
+  border-color: #777;
 }
 
-.node-line {
+.node.file {
+  border-width: 2px;
+  border-color: #999;
+}
+
+.node.container {
+  border-width: 0;
+}
+
+.node.source {
+  border-width: 0;
+}
+
+.node.container > .node-header,
+.node.source > .node-header {
+  border-bottom-width: 0;
+}
+
+.node-header {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  left: 0;
   display: flex;
+  height: 40px;
   min-width: 0;
   align-items: center;
-  padding: 0 20px;
+  gap: 6px;
+  padding: 0 10px;
   overflow: hidden;
-  font: 600 48px/60px var(--font-mono);
+  border-bottom: 1px solid rgb(0 0 0 / 12%);
+  color: #333;
+  font: 700 24px/40px var(--font-mono);
+  transform-origin: top left;
+  white-space: nowrap;
+}
+
+.directory > .node-header {
+  height: 64px;
+  color: #171717;
+  font-size: 48px;
+  line-height: 64px;
+}
+
+.file > .node-header {
+  height: 64px;
+  font-size: 48px;
+  line-height: 64px;
+}
+
+.source > .node-header {
+  height: 40px;
+  color: #555;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 40px;
+}
+
+.map > .node > .node-header {
+  z-index: 100;
+}
+
+.breadcrumb {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.breadcrumb-separator {
+  flex: none;
+  color: #999;
+}
+
+.source-flow {
+  position: absolute;
+  top: var(--flow-top);
+  left: 16px;
+  display: flex;
+  gap: 32px;
+  color: #171717;
+  font: 16px/22px var(--font-mono);
+  tab-size: 4;
+}
+
+.source-column {
+  flex: none;
+}
+
+.source-row {
+  height: 22px;
+  line-height: 22px;
   white-space: pre;
 }
 
-.directory > .node-lines {
-  border-top: 2px solid #888;
-  color: #222;
-  background: #ddd;
+.source-row.highlighted {
+  height: 44px;
+  line-height: 44px;
 }
 
-.file > .node-lines {
-  border-top: 1px solid #aaa;
-  color: #333;
-  background: #eee;
+.source-run.highlighted {
+  font-size: 32px;
+  line-height: 44px;
 }
 
-.directory .node-line,
-.file .node-line {
-  font-weight: 700;
+.source-flow ::selection {
+  color: #fff;
+  background: #2467c8;
 }
 
-.chunk > .node-lines {
-  color: #777;
-}
-
-.continuation::after {
-  position: absolute;
-  top: 4px;
-  right: 6px;
-  color: #999;
-  font: 600 28px/1 var(--font-mono);
-  content: "↳";
-}
-
-.chunk-content {
-  display: none;
-}
-
-.node.hovered > .node-lines,
-.node.path-hovered > .node-lines {
-  color: #d00;
-}
-
-pre {
-  margin: 0;
+.source-preview {
+  position: fixed;
+  z-index: 20;
+  max-width: 60vw;
+  max-height: 60vh;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid #777;
   color: #171717;
-  font: 12px/1.35 var(--font-mono);
-  overflow-wrap: anywhere;
+  background: #fff;
+  cursor: text;
+  touch-action: auto;
+  user-select: text;
+}
+
+.source-preview-code {
+  margin: 0;
+  font: 10px/14px var(--font-mono);
   tab-size: 4;
-  white-space: pre-wrap;
+  white-space: pre;
+}
+
+.node.path-hovered {
+  border-color: #d22;
+}
+
+.node.path-hovered > .node-header {
+  color: #b11;
 }
 
 .view-controls {
@@ -131,7 +204,7 @@ pre {
   font: 11px/1.2 var(--font-mono);
 }
 
-.reset-view {
+.view-button {
   padding: 5px 8px;
   border: 1px solid #aaa;
   border-radius: 2px;
@@ -141,33 +214,18 @@ pre {
   cursor: pointer;
 }
 
-.source-tooltip {
-  position: fixed;
-  z-index: 20;
-  display: flex;
-  width: max-content;
-  max-width: 60vw;
-  max-height: 60vh;
-  flex-direction: column;
-  border: 1px solid #888;
-  border-radius: 3px;
-  color: #171717;
-  background: #fff;
-  box-shadow: 0 4px 18px rgb(0 0 0 / 20%);
-  touch-action: auto;
-  user-select: text;
+.view-button[aria-pressed="true"] {
+  color: #fff;
+  border-color: #444;
+  background: #444;
 }
 
-.source-tooltip[hidden] {
-  display: none;
+.view-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
-.source-tooltip-code {
-  min-width: 0;
-  min-height: 0;
-  margin: 0;
-  padding: 8px;
-  overflow: auto;
-  overflow-wrap: normal;
-  white-space: pre;
+.zoom-value {
+  min-width: 9ch;
+  font-variant-numeric: tabular-nums;
 }
