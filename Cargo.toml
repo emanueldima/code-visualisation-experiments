@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8"
+protobuf = "3.7"
+scip = "0.9"
 serde = { version = "1", features = ["derive", "rc"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 tower-http = { version = "0.6", features = ["fs"] }

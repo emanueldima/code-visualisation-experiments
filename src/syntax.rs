@@ -20,6 +20,7 @@ pub struct SourceHighlight {
 pub struct CodeNode {
     pub name: String,
     pub kind: CodeNodeKind,
+    pub test: bool,
     pub public: bool,
     pub public_members: bool,
     pub declared_type: Option<String>,
@@ -53,7 +54,7 @@ impl SyntaxTreeBuilder {
             return vec![self.source_node(source, 0, source.len(), "source")];
         };
         let root = tree.root_node();
-        self.partition(source, 0, source.len(), &direct_elements(root))
+        self.partition(source, 0, source.len(), &direct_elements(root, source))
     }
 
     fn element(
@@ -63,7 +64,7 @@ impl SyntaxTreeBuilder {
         start: usize,
         end: usize,
     ) -> CodeNode {
-        let (children, is_container) = semantic_children(element.node);
+        let (children, is_container) = semantic_children(element.node, source);
         let name = node_label(source, element.node);
         let highlight = source_highlight(element);
         let public = is_public(source, element);
@@ -75,6 +76,7 @@ impl SyntaxTreeBuilder {
         if !is_container {
             let mut node = self.source_node(source, start, end, &name);
             node.highlight = highlight;
+            node.test = element.test;
             node.public = public;
             node.public_members = public_members;
             node.declared_type = declared_type;
@@ -85,6 +87,7 @@ impl SyntaxTreeBuilder {
         CodeNode {
             name,
             kind: CodeNodeKind::Container,
+            test: element.test,
             public,
             public_members,
             declared_type,
@@ -201,6 +204,7 @@ impl SyntaxTreeBuilder {
         CodeNode {
             name: if name.is_empty() { "-" } else { name }.to_owned(),
             kind: CodeNodeKind::Source,
+            test: false,
             public: false,
             public_members: false,
             declared_type: None,
@@ -222,14 +226,18 @@ struct SemanticElement<'tree> {
     start_byte: usize,
     lead_start_byte: usize,
     has_leading_comment: bool,
+    test: bool,
 }
 
-fn semantic_children(node: Node<'_>) -> (Vec<SemanticElement<'_>>, bool) {
+fn semantic_children<'tree>(
+    node: Node<'tree>,
+    source: &str,
+) -> (Vec<SemanticElement<'tree>>, bool) {
     if node.kind() == "impl_item" {
         let Some(body) = find_descendant(node, "declaration_list") else {
             return (Vec::new(), false);
         };
-        let children = direct_elements(body);
+        let children = direct_elements(body, source);
         let is_container = !children.is_empty();
         return (children, is_container);
     }
@@ -237,7 +245,7 @@ fn semantic_children(node: Node<'_>) -> (Vec<SemanticElement<'_>>, bool) {
         let Some(body) = find_descendant(node, "declaration_list") else {
             return (Vec::new(), false);
         };
-        return (direct_elements(body), true);
+        return (direct_elements(body, source), true);
     }
 
     (Vec::new(), false)
@@ -273,12 +281,13 @@ fn source_highlight(element: SemanticElement<'_>) -> Option<SourceHighlight> {
     })
 }
 
-fn direct_elements(node: Node<'_>) -> Vec<SemanticElement<'_>> {
+fn direct_elements<'tree>(node: Node<'tree>, source: &str) -> Vec<SemanticElement<'tree>> {
     let mut elements = Vec::new();
     let mut prefix_start = None;
     let mut contiguous_start = None;
     let mut prefix_end_row = None;
     let mut has_leading_comment = false;
+    let mut test = false;
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "attribute_item" || is_comment(child.kind()) {
@@ -288,6 +297,8 @@ fn direct_elements(node: Node<'_>) -> Vec<SemanticElement<'_>> {
             }
             prefix_end_row = Some(child.end_position().row);
             has_leading_comment |= is_comment(child.kind());
+            test |= child.kind() == "attribute_item"
+                && is_test_attribute(&source[child.start_byte()..child.end_byte()]);
             continue;
         }
         let item = if is_item(child.kind()) {
@@ -311,18 +322,37 @@ fn direct_elements(node: Node<'_>) -> Vec<SemanticElement<'_>> {
                     item.start_byte()
                 },
                 has_leading_comment,
+                test,
             });
             contiguous_start = None;
             prefix_end_row = None;
             has_leading_comment = false;
+            test = false;
             continue;
         }
         prefix_start = None;
         contiguous_start = None;
         prefix_end_row = None;
         has_leading_comment = false;
+        test = false;
     }
     elements
+}
+
+fn is_test_attribute(attribute: &str) -> bool {
+    let compact = attribute
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    let body = compact
+        .strip_prefix("#[")
+        .and_then(|body| body.strip_suffix(']'))
+        .unwrap_or(&compact);
+    if body == "cfg(test)" {
+        return true;
+    }
+    let path = body.split('(').next().unwrap_or(body);
+    path == "test" || path.ends_with("::test")
 }
 
 fn find_descendant<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
@@ -635,6 +665,16 @@ mod tests {
         assert_eq!(nodes[1].declared_type.as_deref(), Some("Two"));
         assert_eq!(nodes[2].declared_type.as_deref(), Some("Three"));
         assert_eq!(nodes[3].declared_type.as_deref(), Some("Four"));
+    }
+
+    #[test]
+    fn identifies_cfg_and_attribute_tests_without_hiding_mixed_cfg_items() {
+        let source = "#[cfg(test)]\nmod tests { fn helper() {} }\n#[tokio::test(flavor = \"current_thread\")]\nasync fn async_test() {}\n#[cfg(any(test, feature = \"extra\"))]\nfn mixed() {}\n";
+        let nodes = SyntaxTreeBuilder::new(80).unwrap().build(source);
+
+        assert!(nodes[0].test);
+        assert!(nodes[1].test);
+        assert!(!nodes[2].test);
     }
 
     #[test]

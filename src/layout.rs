@@ -48,6 +48,8 @@ pub struct MapNode {
     pub ancestor_ids: Vec<usize>,
     pub breadcrumbs: Vec<Breadcrumb>,
     pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
     pub rect: Rect,
     pub header_height: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,6 +60,10 @@ pub struct MapNode {
     pub end_byte: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flow: Option<SourceFlow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
     pub children: Vec<MapNode>,
 }
 
@@ -95,11 +101,14 @@ struct VisualNode {
     ancestor_ids: Vec<usize>,
     breadcrumbs: Vec<Breadcrumb>,
     kind: &'static str,
+    subtitle: Option<String>,
     source: Option<String>,
     file_source: Option<FileSource>,
     rows: usize,
     start_byte: Option<usize>,
     end_byte: Option<usize>,
+    preview_key: Option<String>,
+    details: Option<String>,
     children: Vec<VisualNode>,
 }
 
@@ -123,11 +132,14 @@ fn visual_node(node: ProjectNode, ancestors: &[usize], next_id: &mut usize) -> V
             kind,
         }],
         kind,
+        subtitle: node.subtitle,
         source: node.source,
         file_source: node.file_source,
         rows: node.rows,
         start_byte: node.start_byte,
         end_byte: node.end_byte,
+        preview_key: node.preview_key,
+        details: node.details,
         children,
     };
 
@@ -139,6 +151,7 @@ fn visual_node(node: ProjectNode, ancestors: &[usize], next_id: &mut usize) -> V
     {
         let mut child = visual.children.pop().expect("single child");
         visual.breadcrumbs.append(&mut child.breadcrumbs);
+        visual.subtitle = child.subtitle;
         visual.children = child.children;
         visual.file_source = child.file_source;
         visual.start_byte = child.start_byte;
@@ -188,6 +201,7 @@ fn pack_node(mut node: VisualNode, config: LayoutConfig) -> MapNode {
             ancestor_ids: node.ancestor_ids,
             breadcrumbs: node.breadcrumbs,
             kind: node.kind,
+            subtitle: node.subtitle,
             rect: Rect {
                 x: 0.0,
                 y: 0.0,
@@ -199,6 +213,8 @@ fn pack_node(mut node: VisualNode, config: LayoutConfig) -> MapNode {
             start_byte: node.start_byte,
             end_byte: node.end_byte,
             flow: Some(flow),
+            preview_key: node.preview_key,
+            details: node.details,
             children: Vec::new(),
         };
     }
@@ -230,6 +246,7 @@ fn pack_node(mut node: VisualNode, config: LayoutConfig) -> MapNode {
         ancestor_ids: node.ancestor_ids,
         breadcrumbs: node.breadcrumbs,
         kind: node.kind,
+        subtitle: node.subtitle,
         rect: Rect {
             x: 0.0,
             y: 0.0,
@@ -243,6 +260,8 @@ fn pack_node(mut node: VisualNode, config: LayoutConfig) -> MapNode {
         start_byte: node.start_byte,
         end_byte: node.end_byte,
         flow: None,
+        preview_key: node.preview_key,
+        details: node.details,
         children,
     }
 }
@@ -646,8 +665,10 @@ mod tests {
             NodeKind::Directory,
             vec![ProjectNode {
                 name: "main.rs".into(),
+                subtitle: None,
                 path: "main.rs".into(),
                 kind: NodeKind::File,
+                test: false,
                 public: false,
                 public_members: false,
                 declared_type: None,
@@ -656,6 +677,8 @@ mod tests {
                 source: None,
                 file_source: Some(FileSource {
                     text: file_text.into(),
+                    package: "test".into(),
+                    module_path: "main.rs".into(),
                     highlights: vec![SourceHighlight {
                         lead_start_byte: 0,
                         start_byte: 0,
@@ -668,6 +691,8 @@ mod tests {
                 rows: 0,
                 start_byte: None,
                 end_byte: None,
+                preview_key: None,
+                details: None,
             }],
         );
         let structure = pack(project.clone(), STRUCTURE_CONFIG);
@@ -740,8 +765,10 @@ mod tests {
     fn source(name: &str, rows: usize) -> ProjectNode {
         ProjectNode {
             name: name.into(),
+            subtitle: None,
             path: name.into(),
             kind: NodeKind::Source,
+            test: false,
             public: false,
             public_members: false,
             declared_type: None,
@@ -753,6 +780,8 @@ mod tests {
             rows,
             start_byte: Some(0),
             end_byte: Some(name.len()),
+            preview_key: None,
+            details: None,
         }
     }
 
@@ -766,6 +795,7 @@ mod tests {
                 kind,
             }],
             kind,
+            subtitle: None,
             rect: Rect {
                 x: 0.0,
                 y: 0.0,
@@ -777,6 +807,8 @@ mod tests {
             start_byte: None,
             end_byte: None,
             flow: None,
+            preview_key: None,
+            details: None,
             children: Vec::new(),
         }
     }
@@ -784,8 +816,10 @@ mod tests {
     fn node(name: &str, kind: NodeKind, children: Vec<ProjectNode>) -> ProjectNode {
         ProjectNode {
             name: name.into(),
+            subtitle: None,
             path: name.into(),
             kind,
+            test: false,
             public: false,
             public_members: false,
             declared_type: None,
@@ -797,6 +831,8 @@ mod tests {
             rows: 0,
             start_byte: None,
             end_byte: None,
+            preview_key: None,
+            details: None,
         }
     }
 }

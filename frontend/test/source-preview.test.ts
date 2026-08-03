@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { calculatePopupPosition, createSourceResolver } from "../src/source-preview.ts";
+import {
+  calculatePopupPosition,
+  createCallPreviewResolver,
+  createSourceResolver,
+} from "../src/source-preview.ts";
 
 test("resolves structure ranges from source-mode file text", () => {
   const fileSource = "\nimpl A {\nfn α() {}\n}\n";
@@ -83,4 +87,27 @@ test("places the popup beside the anchor and flips at the right edge", () => {
     ),
     { left: 492, top: 488 },
   );
+});
+
+test("resolves call references and ambiguous candidate details", () => {
+  const root = {
+    breadcrumbs: [{ id: 0, path: "calls" }],
+    children: [
+      {
+        breadcrumbs: [{ id: 1, path: "demo::run" }],
+        source: "fn run() {}",
+        children: [],
+      },
+      {
+        breadcrumbs: [{ id: 2, path: "ambiguous:1" }],
+        preview_key: "ambiguous:1",
+        details: "Candidates:\ndemo::a\ndemo::b",
+        children: [],
+      },
+    ],
+  };
+  const resolve = createCallPreviewResolver(root);
+
+  assert.equal(resolve("demo::run"), "fn run() {}");
+  assert.equal(resolve("ambiguous:1"), "Candidates:\ndemo::a\ndemo::b");
 });

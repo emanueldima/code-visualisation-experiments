@@ -5,6 +5,8 @@ use crate::syntax::{CodeNode, CodeNodeKind, SourceHighlight, SyntaxTreeBuilder};
 #[derive(Clone, Debug)]
 pub struct FileSource {
     pub text: String,
+    pub package: String,
+    pub module_path: String,
     pub highlights: Vec<SourceHighlight>,
     pub visible_ranges: Option<Vec<Range<usize>>>,
 }
@@ -12,8 +14,10 @@ pub struct FileSource {
 #[derive(Clone, Debug)]
 pub struct ProjectNode {
     pub name: String,
+    pub subtitle: Option<String>,
     pub path: String,
     pub kind: NodeKind,
+    pub test: bool,
     pub public: bool,
     pub public_members: bool,
     pub declared_type: Option<String>,
@@ -25,6 +29,8 @@ pub struct ProjectNode {
     pub rows: usize,
     pub start_byte: Option<usize>,
     pub end_byte: Option<usize>,
+    pub preview_key: Option<String>,
+    pub details: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,13 +55,16 @@ pub fn scan(root: &Path, wrap_column: usize) -> io::Result<ProjectNode> {
         .and_then(|name| name.to_str())
         .unwrap_or("project")
         .to_owned();
+    let package = package_name(&root).unwrap_or_else(|| name.clone());
     let mut syntax = SyntaxTreeBuilder::new(wrap_column).map_err(io::Error::other)?;
-    let children = scan_directory(&root, &root, &mut syntax)?;
+    let children = scan_directory(&root, &root, &package, &root, &mut syntax)?;
 
     Ok(ProjectNode {
         name,
+        subtitle: None,
         path: String::new(),
         kind: NodeKind::Directory,
+        test: false,
         public: false,
         public_members: false,
         declared_type: None,
@@ -67,14 +76,27 @@ pub fn scan(root: &Path, wrap_column: usize) -> io::Result<ProjectNode> {
         rows: 0,
         start_byte: None,
         end_byte: None,
+        preview_key: None,
+        details: None,
     })
 }
 
 fn scan_directory(
     root: &Path,
     directory: &Path,
+    inherited_package: &str,
+    inherited_package_root: &Path,
     syntax: &mut SyntaxTreeBuilder,
 ) -> io::Result<Vec<ProjectNode>> {
+    let local_package = package_name(directory);
+    let package = local_package
+        .clone()
+        .unwrap_or_else(|| inherited_package.to_owned());
+    let package_root = if local_package.is_some() {
+        directory
+    } else {
+        inherited_package_root
+    };
     let entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     let mut children = Vec::new();
 
@@ -94,15 +116,17 @@ fn scan_directory(
                 continue;
             }
 
-            let nested = scan_directory(root, &path, syntax)?;
+            let nested = scan_directory(root, &path, &package, package_root, syntax)?;
             if nested.is_empty() {
                 continue;
             }
 
             children.push(ProjectNode {
                 name: name_text.to_owned(),
+                subtitle: None,
                 path: relative_path(root, &path),
                 kind: NodeKind::Directory,
+                test: false,
                 public: false,
                 public_members: false,
                 declared_type: None,
@@ -114,6 +138,8 @@ fn scan_directory(
                 rows: 0,
                 start_byte: None,
                 end_byte: None,
+                preview_key: None,
+                details: None,
             });
             continue;
         }
@@ -133,8 +159,10 @@ fn scan_directory(
             .collect::<Vec<_>>();
         children.push(ProjectNode {
             name: name_text.to_owned(),
+            subtitle: None,
             path: path_text,
             kind: NodeKind::File,
+            test: false,
             public: false,
             public_members: false,
             declared_type: None,
@@ -143,6 +171,8 @@ fn scan_directory(
             source: None,
             file_source: Some(FileSource {
                 text: source,
+                package: package.clone(),
+                module_path: relative_path(package_root, &path),
                 highlights,
                 visible_ranges: None,
             }),
@@ -150,6 +180,8 @@ fn scan_directory(
             rows: 0,
             start_byte: None,
             end_byte: None,
+            preview_key: None,
+            details: None,
         });
     }
 
@@ -164,11 +196,13 @@ fn scan_directory(
 fn project_code_node(file_path: &str, node: CodeNode) -> ProjectNode {
     ProjectNode {
         name: node.name,
+        subtitle: None,
         path: format!("{file_path}#{}-{}", node.start_byte, node.end_byte),
         kind: match node.kind {
             CodeNodeKind::Container => NodeKind::Container,
             CodeNodeKind::Source => NodeKind::Source,
         },
+        test: node.test,
         public: node.public,
         public_members: node.public_members,
         declared_type: node.declared_type,
@@ -184,6 +218,8 @@ fn project_code_node(file_path: &str, node: CodeNode) -> ProjectNode {
         rows: node.rows,
         start_byte: Some(node.start_byte),
         end_byte: Some(node.end_byte),
+        preview_key: None,
+        details: None,
     }
 }
 
@@ -198,6 +234,25 @@ fn collect_highlights(nodes: &[CodeNode], output: &mut Vec<SourceHighlight>) {
 
 fn should_skip_directory(name: &str) -> bool {
     name == "target" || name == ".git" || name.starts_with('.')
+}
+
+fn package_name(directory: &Path) -> Option<String> {
+    let manifest = fs::read_to_string(directory.join("Cargo.toml")).ok()?;
+    let package = manifest.split("[package]").nth(1)?.split('\n');
+    for line in package {
+        let line = line.trim();
+        if line.starts_with('[') {
+            return None;
+        }
+        let Some(value) = line
+            .strip_prefix("name")
+            .and_then(|line| line.trim().strip_prefix('='))
+        else {
+            continue;
+        };
+        return Some(value.trim().trim_matches(['\'', '"']).replace('-', "_"));
+    }
+    None
 }
 
 fn relative_path(root: &Path, path: &Path) -> String {

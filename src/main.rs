@@ -1,8 +1,12 @@
+mod call_graph;
+mod call_hierarchy;
 mod layout;
 mod project;
 mod public_view;
+mod scip_index;
 mod source_flow;
 mod syntax;
+mod test_view;
 
 use std::{
     env,
@@ -27,6 +31,7 @@ const DEFAULT_WRAP_COLUMN: usize = 80;
 #[derive(Clone)]
 struct AppState {
     project: Arc<ProjectNode>,
+    call_graph: Arc<call_graph::CallGraph>,
     wrap_column: usize,
 }
 
@@ -41,18 +46,58 @@ struct MapResponse {
 struct MapQuery {
     #[serde(default)]
     public: bool,
+    #[serde(default)]
+    tests: bool,
+}
+
+#[derive(Serialize)]
+struct CallsResponse {
+    structure: layout::PackedMap,
+    source: layout::PackedMap,
+    wrap_column: usize,
+}
+
+#[derive(Deserialize)]
+struct CallsQuery {
+    #[serde(default)]
+    public: bool,
+    #[serde(default)]
+    unresolved: bool,
+    #[serde(default)]
+    tests: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_args()?;
-    let project = scan(&config.root, config.wrap_column)?;
+    let root = config.root.canonicalize()?;
+    let index_path = root.join("index.scip");
+    if !index_path.try_exists()? {
+        eprintln!(
+            "SCIP index not found at {}.\nBuild it with:\n  {}",
+            index_path.display(),
+            scip_index::build_command(&root, &index_path)
+        );
+        return Err("index.scip is required".into());
+    }
+    let project = scan(&root, config.wrap_column)?;
+    if scip_index::is_stale(&root, &project, &index_path)? {
+        eprintln!(
+            "Warning: source files are newer than {}. Rebuild it with:\n  {}",
+            index_path.display(),
+            scip_index::build_command(&root, &index_path)
+        );
+    }
+    let semantic = scip_index::load(&index_path, &project)?;
+    let call_graph = call_graph::build(&project, &semantic)?;
     let state = AppState {
         project: Arc::new(project),
+        call_graph: Arc::new(call_graph),
         wrap_column: config.wrap_column,
     };
     let app = Router::new()
         .route("/api/map", get(get_map))
+        .route("/api/calls", get(get_calls))
         .fallback_service(ServeDir::new("frontend/dist").append_index_html_on_directories(true))
         .with_state(state.clone());
     let address = SocketAddr::from((Ipv4Addr::UNSPECIFIED, config.port));
@@ -72,19 +117,19 @@ async fn get_map(
     Query(query): Query<MapQuery>,
     headers: HeaderMap,
 ) -> Result<Json<MapResponse>, StatusCode> {
-    let supplied = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-
-    if supplied != Some(ACCESS_TOKEN) {
+    if !authorized(&headers) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let project = if query.public {
-        public_view::build(state.project.as_ref())
-    } else {
+    let project = if query.tests {
         state.project.as_ref().clone()
+    } else {
+        test_view::hide(state.project.as_ref())
+    };
+    let project = if query.public {
+        public_view::build(&project)
+    } else {
+        project
     };
     let config = layout::LayoutConfig {
         wrap_column: state.wrap_column,
@@ -99,6 +144,47 @@ async fn get_map(
         },
     );
     Ok(Json(MapResponse {
+        structure,
+        source,
+        wrap_column: state.wrap_column,
+    }))
+}
+
+async fn get_calls(
+    State(state): State<AppState>,
+    Query(query): Query<CallsQuery>,
+    headers: HeaderMap,
+) -> Result<Json<CallsResponse>, StatusCode> {
+    if !authorized(&headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let options = call_hierarchy::Options {
+        public_only: query.public,
+        show_unresolved: query.unresolved,
+        inline_source: false,
+        show_tests: query.tests,
+    };
+    let structure = layout::pack(
+        call_hierarchy::build(&state.call_graph, options),
+        layout::LayoutConfig {
+            wrap_column: state.wrap_column,
+            mode: layout::LayoutMode::Structure,
+        },
+    );
+    let source = layout::pack(
+        call_hierarchy::build(
+            &state.call_graph,
+            call_hierarchy::Options {
+                inline_source: true,
+                ..options
+            },
+        ),
+        layout::LayoutConfig {
+            wrap_column: state.wrap_column,
+            mode: layout::LayoutMode::Source,
+        },
+    );
+    Ok(Json(CallsResponse {
         structure,
         source,
         wrap_column: state.wrap_column,
@@ -154,6 +240,14 @@ fn parse_next<T: std::str::FromStr>(
         .ok_or_else(|| format!("{option} requires a value"))?
         .parse()
         .map_err(|_| format!("invalid value for {option}"))
+}
+
+fn authorized(headers: &HeaderMap) -> bool {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        == Some(ACCESS_TOKEN)
 }
 
 fn local_ip() -> Option<Ipv4Addr> {

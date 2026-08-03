@@ -122,6 +122,29 @@ body,
   color: #999;
 }
 
+.node-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  color: #777;
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+}
+
+.node-source {
+  position: absolute;
+  top: var(--content-top);
+  right: 10px;
+  left: 10px;
+  margin: 0;
+  overflow: hidden;
+  color: #171717;
+  font: 16px/22px var(--font-mono);
+  tab-size: 4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .source-flow {
   position: absolute;
   top: var(--flow-top);
@@ -156,6 +179,101 @@ body,
 .source-flow ::selection {
   color: #fff;
   background: #2467c8;
+}
+
+.map.source-lod.lod-detailed-hidden .node-header,
+.map.source-lod.lod-detailed-hidden .source-flow,
+.map.source-lod.lod-medium-hidden .source-lod-layer.medium,
+.map.source-lod.lod-coarse-hidden .source-lod-layer.coarse {
+  visibility: hidden;
+}
+
+.source-lod-layer {
+  position: absolute;
+  z-index: 200;
+  inset: 0;
+  overflow: hidden;
+  color: #171717;
+  pointer-events: none;
+}
+
+.source-lod-region,
+.source-lod-file {
+  position: absolute;
+  overflow: hidden;
+}
+
+.source-lod-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 0 10px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.source-lod-label.medium.directory {
+  font-size: 256px;
+}
+
+.source-lod-label.medium.file {
+  font-size: 192px;
+}
+
+.source-lod-label.coarse.directory {
+  font-size: 768px;
+}
+
+.source-lod-label.coarse.file {
+  font-size: 512px;
+}
+
+.source-lod-flow {
+  position: absolute;
+  left: 16px;
+  display: flex;
+  gap: 32px;
+  font: 16px/22px var(--font-mono);
+  tab-size: 4;
+}
+
+.source-lod-column {
+  flex: none;
+}
+
+.source-lod-row {
+  position: relative;
+  height: 22px;
+  line-height: 22px;
+  white-space: pre;
+}
+
+.source-lod-row.highlighted {
+  height: 44px;
+  line-height: 44px;
+}
+
+.source-lod-spacer {
+  visibility: hidden;
+}
+
+.source-lod-chunk-anchor {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 0;
+  vertical-align: top;
+}
+
+.source-lod-chunk-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  font-size: 128px;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
 }
 
 .source-preview {

@@ -2,9 +2,12 @@ import { trimBlankLines } from "./source-text.ts";
 
 type SourceNode = {
   breadcrumbs: { id: number; path: string }[];
+  source?: string;
   flow?: { source: string };
   start_byte?: number;
   end_byte?: number;
+  preview_key?: string;
+  details?: string;
   children: SourceNode[];
 };
 
@@ -76,6 +79,22 @@ export function createSourceResolver(
     cache.set(id, source);
     return source;
   };
+}
+
+export function createCallPreviewResolver(
+  root: SourceNode,
+): (key: string) => string | undefined {
+  const previews = new Map<string, string>();
+  const index = (node: SourceNode) => {
+    const path = node.breadcrumbs.at(-1)?.path;
+    if (path !== undefined && node.source !== undefined) previews.set(path, node.source);
+    if (node.preview_key !== undefined && node.details !== undefined) {
+      previews.set(node.preview_key, node.details);
+    }
+    for (const child of node.children) index(child);
+  };
+  index(root);
+  return (key) => previews.get(key);
 }
 
 export function createSourcePreview(
